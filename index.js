@@ -10,23 +10,26 @@ const client = new Client({
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
         GatewayIntentBits.DirectMessageTyping,
+        GatewayIntentBits.GuildMessageReactions,
     ],
 });
 
-// Store active trades
+// Store active trades and suggestions
 const activeTrades = new Map();
-const TRADE_CHANNEL_ID = '1410622424029855867'; // Your specific channel ID
+const TRADE_CHANNEL_ID = '1410622424029855867';
+const SUGGESTION_CHANNEL_ID = '1410693106608902216';
+const SUGGESTION_BOARD_CHANNEL_ID = '1410693106608902216'; // Same channel for now
 
 client.once(Events.ClientReady, () => {
     console.log(`✅ Bot is online as ${client.user.tag}`);
-    // Start message cleanup
+    // Start message cleanup for both channels
     startMessageCleanup();
 });
 
 // Message cleanup function - instant deletion
 client.on(Events.MessageCreate, async (message) => {
-    // Delete non-bot messages in trade channel immediately
-    if (message.channelId === TRADE_CHANNEL_ID && !message.author.bot) {
+    // Delete non-bot messages in trade and suggestion channels immediately
+    if ((message.channelId === TRADE_CHANNEL_ID || message.channelId === SUGGESTION_CHANNEL_ID) && !message.author.bot) {
         try {
             await message.delete();
         } catch (error) {
@@ -39,10 +42,23 @@ client.on(Events.MessageCreate, async (message) => {
 function startMessageCleanup() {
     setInterval(async () => {
         try {
-            const channel = await client.channels.fetch(TRADE_CHANNEL_ID);
-            const messages = await channel.messages.fetch({ limit: 50 });
-            
-            messages.forEach(async (message) => {
+            // Cleanup trade channel
+            const tradeChannel = await client.channels.fetch(TRADE_CHANNEL_ID);
+            const tradeMessages = await tradeChannel.messages.fetch({ limit: 50 });
+            tradeMessages.forEach(async (message) => {
+                if (!message.author.bot) {
+                    try {
+                        await message.delete();
+                    } catch (error) {
+                        // Ignore errors
+                    }
+                }
+            });
+
+            // Cleanup suggestion channel
+            const suggestionChannel = await client.channels.fetch(SUGGESTION_CHANNEL_ID);
+            const suggestionMessages = await suggestionChannel.messages.fetch({ limit: 50 });
+            suggestionMessages.forEach(async (message) => {
                 if (!message.author.bot) {
                     try {
                         await message.delete();
@@ -54,7 +70,7 @@ function startMessageCleanup() {
         } catch (error) {
             console.error('Periodic cleanup error:', error);
         }
-    }, 10000); // Check every 10 seconds
+    }, 5000); // Check every 5 seconds
 }
 
 // Register slash commands
@@ -72,6 +88,14 @@ client.on(Events.ClientReady, async () => {
             {
                 name: 'activetrades',
                 description: 'View all active trades',
+            },
+            {
+                name: 'suggest',
+                description: 'Submit a suggestion',
+            },
+            {
+                name: 'suggestboard',
+                description: 'View the suggestion leaderboard',
             }
         ];
 
@@ -140,6 +164,37 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await interaction.showModal(modal);
         }
 
+        // Suggestion command
+        if (interaction.commandName === 'suggest') {
+            // Check if command is used in the correct channel
+            if (interaction.channelId !== SUGGESTION_CHANNEL_ID) {
+                await interaction.reply({ 
+                    content: `⚠️ This command can only be used in <#${SUGGESTION_CHANNEL_ID}>`, 
+                    ephemeral: true 
+                });
+                return;
+            }
+
+            // Create modal for suggestion
+            const modal = new ModalBuilder()
+                .setCustomId('suggestionModal')
+                .setTitle('Submit Suggestion')
+                .addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('suggestionInput')
+                            .setLabel('Your Suggestion')
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setRequired(true)
+                            .setPlaceholder('What would you like to suggest?')
+                            .setMaxLength(1000)
+                            .setMinLength(10)
+                    )
+                );
+
+            await interaction.showModal(modal);
+        }
+
         // View my trades command
         if (interaction.commandName === 'mytrades') {
             const userTrades = [];
@@ -191,6 +246,91 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 embeds: [embed], 
                 ephemeral: true 
             });
+        }
+
+        // Suggestion board command
+        if (interaction.commandName === 'suggestboard') {
+            // Check if command is used in the correct channel
+            if (interaction.channelId !== SUGGESTION_CHANNEL_ID) {
+                await interaction.reply({ 
+                    content: `⚠️ This command can only be used in <#${SUGGESTION_CHANNEL_ID}>`, 
+                    ephemeral: true 
+                });
+                return;
+            }
+
+            try {
+                const channel = await client.channels.fetch(SUGGESTION_CHANNEL_ID);
+                const messages = await channel.messages.fetch({ limit: 100 });
+                
+                // Filter suggestion messages (those with star reactions)
+                const suggestions = [];
+                for (const [id, message] of messages) {
+                    if (message.embeds.length > 0 && message.embeds[0].title === '💡 New Suggestion') {
+                        const starCount = message.reactions.cache.get('⭐')?.count || 0;
+                        suggestions.push({
+                            message: message,
+                            embed: message.embeds[0],
+                            stars: starCount,
+                            timestamp: message.createdTimestamp
+                        });
+                    }
+                }
+
+                // Sort by stars (descending), then by timestamp (newer first)
+                suggestions.sort((a, b) => {
+                    if (b.stars !== a.stars) {
+                        return b.stars - a.stars;
+                    }
+                    return b.timestamp - a.timestamp;
+                });
+
+                if (suggestions.length === 0) {
+                    await interaction.reply({ 
+                        content: '❌ No suggestions found.', 
+                        ephemeral: true 
+                    });
+                    return;
+                }
+
+                // Create leaderboard embed
+                const leaderboardEmbed = new EmbedBuilder()
+                    .setTitle('🏆 Suggestion Leaderboard')
+                    .setDescription(`Top suggestions ranked by ⭐ votes`)
+                    .setColor('#FFD700')
+                    .setFooter({ text: `Suggestion System`, iconURL: client.user.displayAvatarURL() })
+                    .setTimestamp();
+
+                // Add top suggestions (max 10)
+                const topSuggestions = suggestions.slice(0, 10);
+                let leaderboardText = '';
+                
+                topSuggestions.forEach((suggestion, index) => {
+                    const embed = suggestion.embed;
+                    const username = embed.author?.name || 'Unknown User';
+                    const suggestionText = embed.fields.find(f => f.name === 'Suggestion')?.value || 'No content';
+                    const shortSuggestion = suggestionText.length > 100 ? suggestionText.substring(0, 100) + '...' : suggestionText;
+                    
+                    const positionEmoji = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
+                    
+                    leaderboardText += `${positionEmoji} **${username}** - ${suggestion.stars} ⭐\n`;
+                    leaderboardText += `> ${shortSuggestion}\n\n`;
+                });
+
+                leaderboardEmbed.setDescription(leaderboardText || 'No suggestions available.');
+
+                await interaction.reply({ 
+                    embeds: [leaderboardEmbed], 
+                    ephemeral: true 
+                });
+
+            } catch (error) {
+                console.error('Suggestion board error:', error);
+                await interaction.reply({ 
+                    content: '❌ Failed to load suggestion leaderboard.', 
+                    ephemeral: true 
+                });
+            }
         }
     }
 
@@ -300,6 +440,65 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 console.error('Error creating trade post:', error);
                 await interaction.reply({
                     content: '❌ **Failed to create trade post.** Please try again.',
+                    ephemeral: true
+                });
+            }
+        }
+
+        // Handle suggestion modal submission
+        if (interaction.customId === 'suggestionModal') {
+            const suggestionText = interaction.fields.getTextInputValue('suggestionInput');
+
+            // Create suggestion embed
+            const suggestionEmbed = new EmbedBuilder()
+                .setTitle('💡 New Suggestion')
+                .setColor('#5865F2')
+                .setAuthor({ 
+                    name: interaction.user.username, 
+                    iconURL: interaction.user.displayAvatarURL({ dynamic: true, size: 256 }) 
+                })
+                .addFields(
+                    { 
+                        name: 'Suggestion', 
+                        value: suggestionText, 
+                        inline: false 
+                    },
+                    { 
+                        name: 'Submitted', 
+                        value: `<t:${Math.floor(Date.now() / 1000)}:f>`, 
+                        inline: true 
+                    },
+                    { 
+                        name: 'Votes', 
+                        value: '`0 ⭐`', 
+                        inline: true 
+                    }
+                )
+                .setFooter({ 
+                    text: `Suggestion ID: ${interaction.user.id.slice(-6)}`, 
+                    iconURL: client.user.displayAvatarURL() 
+                })
+                .setTimestamp();
+
+            try {
+                // Send the suggestion to the suggestion channel
+                const suggestionChannel = await client.channels.fetch(SUGGESTION_CHANNEL_ID);
+                const suggestionMessage = await suggestionChannel.send({
+                    embeds: [suggestionEmbed]
+                });
+
+                // Add initial star reaction
+                await suggestionMessage.react('⭐');
+
+                await interaction.reply({
+                    content: '✅ **Suggestion submitted successfully!** Community members can now vote with ⭐ reactions.',
+                    ephemeral: true
+                });
+
+            } catch (error) {
+                console.error('Error creating suggestion:', error);
+                await interaction.reply({
+                    content: '❌ **Failed to submit suggestion.** Please try again.',
                     ephemeral: true
                 });
             }
