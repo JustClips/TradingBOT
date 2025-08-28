@@ -14,22 +14,24 @@ const client = new Client({
     ],
 });
 
-// Store active trades and suggestions
+// Store active trades and reviews
 const activeTrades = new Map();
+const userReviews = new Map(); // userId -> reviewMessageId
 const TRADE_CHANNEL_ID = '1410622424029855867';
 const SUGGESTION_CHANNEL_ID = '1410693106608902216';
-const SUGGESTION_BOARD_CHANNEL_ID = '1410693106608902216'; // Same channel for now
+const REVIEW_CHANNEL_ID = '1410697592475488338';
 
 client.once(Events.ClientReady, () => {
     console.log(`✅ Bot is online as ${client.user.tag}`);
-    // Start message cleanup for both channels
+    // Start message cleanup for all channels
     startMessageCleanup();
 });
 
 // Message cleanup function - instant deletion
 client.on(Events.MessageCreate, async (message) => {
-    // Delete non-bot messages in trade and suggestion channels immediately
-    if ((message.channelId === TRADE_CHANNEL_ID || message.channelId === SUGGESTION_CHANNEL_ID) && !message.author.bot) {
+    // Delete non-bot messages in all protected channels immediately
+    const protectedChannels = [TRADE_CHANNEL_ID, SUGGESTION_CHANNEL_ID, REVIEW_CHANNEL_ID];
+    if (protectedChannels.includes(message.channelId) && !message.author.bot) {
         try {
             await message.delete();
         } catch (error) {
@@ -42,31 +44,21 @@ client.on(Events.MessageCreate, async (message) => {
 function startMessageCleanup() {
     setInterval(async () => {
         try {
-            // Cleanup trade channel
-            const tradeChannel = await client.channels.fetch(TRADE_CHANNEL_ID);
-            const tradeMessages = await tradeChannel.messages.fetch({ limit: 50 });
-            tradeMessages.forEach(async (message) => {
-                if (!message.author.bot) {
-                    try {
-                        await message.delete();
-                    } catch (error) {
-                        // Ignore errors
+            const protectedChannels = [TRADE_CHANNEL_ID, SUGGESTION_CHANNEL_ID, REVIEW_CHANNEL_ID];
+            
+            for (const channelId of protectedChannels) {
+                const channel = await client.channels.fetch(channelId);
+                const messages = await channel.messages.fetch({ limit: 50 });
+                messages.forEach(async (message) => {
+                    if (!message.author.bot) {
+                        try {
+                            await message.delete();
+                        } catch (error) {
+                            // Ignore errors
+                        }
                     }
-                }
-            });
-
-            // Cleanup suggestion channel
-            const suggestionChannel = await client.channels.fetch(SUGGESTION_CHANNEL_ID);
-            const suggestionMessages = await suggestionChannel.messages.fetch({ limit: 50 });
-            suggestionMessages.forEach(async (message) => {
-                if (!message.author.bot) {
-                    try {
-                        await message.delete();
-                    } catch (error) {
-                        // Ignore errors
-                    }
-                }
-            });
+                });
+            }
         } catch (error) {
             console.error('Periodic cleanup error:', error);
         }
@@ -96,6 +88,14 @@ client.on(Events.ClientReady, async () => {
             {
                 name: 'suggestboard',
                 description: 'View the suggestion leaderboard',
+            },
+            {
+                name: 'review',
+                description: 'Leave a review for the script',
+            },
+            {
+                name: 'reviewboard',
+                description: 'View all reviews',
             }
         ];
 
@@ -193,6 +193,149 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 );
 
             await interaction.showModal(modal);
+        }
+
+        // Review command
+        if (interaction.commandName === 'review') {
+            // Check if command is used in the correct channel
+            if (interaction.channelId !== REVIEW_CHANNEL_ID) {
+                await interaction.reply({ 
+                    content: `⚠️ This command can only be used in <#${REVIEW_CHANNEL_ID}>`, 
+                    ephemeral: true 
+                });
+                return;
+            }
+
+            // Check if user already has a review
+            if (userReviews.has(interaction.user.id)) {
+                await interaction.reply({ 
+                    content: '❌ You have already submitted a review. Each user can only submit one review.', 
+                    ephemeral: true 
+                });
+                return;
+            }
+
+            // Create modal for review
+            const modal = new ModalBuilder()
+                .setCustomId('reviewModal')
+                .setTitle('Leave a Review')
+                .addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('ratingInput')
+                            .setLabel('Rating (1-5 stars)')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(true)
+                            .setPlaceholder('Enter a number between 1-5')
+                            .setMaxLength(1)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('titleInput')
+                            .setLabel('Review Title')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(true)
+                            .setPlaceholder('Brief summary of your experience')
+                            .setMaxLength(100)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('reviewInput')
+                            .setLabel('Detailed Review')
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setRequired(true)
+                            .setPlaceholder('Share your detailed experience...')
+                            .setMaxLength(1000)
+                            .setMinLength(20)
+                    )
+                );
+
+            await interaction.showModal(modal);
+        }
+
+        // Review board command
+        if (interaction.commandName === 'reviewboard') {
+            // Check if command is used in the correct channel
+            if (interaction.channelId !== REVIEW_CHANNEL_ID) {
+                await interaction.reply({ 
+                    content: `⚠️ This command can only be used in <#${REVIEW_CHANNEL_ID}>`, 
+                    ephemeral: true 
+                });
+                return;
+            }
+
+            try {
+                const channel = await client.channels.fetch(REVIEW_CHANNEL_ID);
+                const messages = await channel.messages.fetch({ limit: 100 });
+                
+                // Filter review messages
+                const reviews = [];
+                for (const [id, message] of messages) {
+                    if (message.embeds.length > 0 && message.embeds[0].title === '⭐ Script Review') {
+                        const embed = message.embeds[0];
+                        const rating = parseInt(embed.fields.find(f => f.name === 'Rating')?.value || '0');
+                        reviews.push({
+                            message: message,
+                            embed: embed,
+                            rating: rating,
+                            timestamp: message.createdTimestamp
+                        });
+                    }
+                }
+
+                // Sort by rating (descending), then by timestamp (newer first)
+                reviews.sort((a, b) => {
+                    if (b.rating !== a.rating) {
+                        return b.rating - a.rating;
+                    }
+                    return b.timestamp - a.timestamp;
+                });
+
+                if (reviews.length === 0) {
+                    await interaction.reply({ 
+                        content: '❌ No reviews found yet.', 
+                        ephemeral: true 
+                    });
+                    return;
+                }
+
+                // Create review board embed
+                const reviewBoardEmbed = new EmbedBuilder()
+                    .setTitle('📋 Script Review Board')
+                    .setDescription(`**${reviews.length}** reviews submitted\nAverage Rating: ${calculateAverageRating(reviews)} ⭐`)
+                    .setColor('#FF6B6B')
+                    .setFooter({ text: `Review System`, iconURL: client.user.displayAvatarURL() })
+                    .setTimestamp();
+
+                // Add top reviews (max 10)
+                const topReviews = reviews.slice(0, 10);
+                let reviewText = '';
+                
+                topReviews.forEach((review, index) => {
+                    const embed = review.embed;
+                    const username = embed.author?.name || 'Unknown User';
+                    const title = embed.fields.find(f => f.name === 'Title')?.value || 'No title';
+                    const rating = '⭐'.repeat(review.rating);
+                    const shortTitle = title.length > 50 ? title.substring(0, 50) + '...' : title;
+                    
+                    reviewText += `**${index + 1}. ${username}** - ${rating}\n`;
+                    reviewText += `*${shortTitle}*\n\n`;
+                });
+
+                reviewBoardEmbed.setDescription(reviewBoardEmbed.data.description + '\n\n' + reviewText);
+
+                await interaction.reply({ 
+                    embeds: [reviewBoardEmbed], 
+                    ephemeral: true 
+                });
+
+            } catch (error) {
+                console.error('Review board error:', error);
+                await interaction.reply({ 
+                    content: '❌ Failed to load review board.', 
+                    ephemeral: true 
+                });
+            }
         }
 
         // View my trades command
@@ -503,6 +646,82 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 });
             }
         }
+
+        // Handle review modal submission
+        if (interaction.customId === 'reviewModal') {
+            const ratingInput = interaction.fields.getTextInputValue('ratingInput');
+            const title = interaction.fields.getTextInputValue('titleInput');
+            const reviewText = interaction.fields.getTextInputValue('reviewInput');
+
+            // Validate rating
+            const rating = parseInt(ratingInput);
+            if (isNaN(rating) || rating < 1 || rating > 5) {
+                await interaction.reply({
+                    content: '❌ **Invalid rating!** Please enter a number between 1-5.',
+                    ephemeral: true
+                });
+                return;
+            }
+
+            // Create review embed
+            const reviewEmbed = new EmbedBuilder()
+                .setTitle('⭐ Script Review')
+                .setColor('#FF6B6B')
+                .setAuthor({ 
+                    name: interaction.user.username, 
+                    iconURL: interaction.user.displayAvatarURL({ dynamic: true, size: 256 }) 
+                })
+                .addFields(
+                    { 
+                        name: 'Title', 
+                        value: title, 
+                        inline: false 
+                    },
+                    { 
+                        name: 'Review', 
+                        value: reviewText, 
+                        inline: false 
+                    },
+                    { 
+                        name: 'Rating', 
+                        value: `${'⭐'.repeat(rating)} (${rating}/5)`, 
+                        inline: true 
+                    },
+                    { 
+                        name: 'Submitted', 
+                        value: `<t:${Math.floor(Date.now() / 1000)}:f>`, 
+                        inline: true 
+                    }
+                )
+                .setFooter({ 
+                    text: `Review by ${interaction.user.username}`, 
+                    iconURL: client.user.displayAvatarURL() 
+                })
+                .setTimestamp();
+
+            try {
+                // Send the review to the review channel
+                const reviewChannel = await client.channels.fetch(REVIEW_CHANNEL_ID);
+                const reviewMessage = await reviewChannel.send({
+                    embeds: [reviewEmbed]
+                });
+
+                // Store user's review (one per user)
+                userReviews.set(interaction.user.id, reviewMessage.id);
+
+                await interaction.reply({
+                    content: '✅ **Review submitted successfully!** Thank you for your feedback.',
+                    ephemeral: true
+                });
+
+            } catch (error) {
+                console.error('Error creating review:', error);
+                await interaction.reply({
+                    content: '❌ **Failed to submit review.** Please try again.',
+                    ephemeral: true
+                });
+            }
+        }
     }
 
     // Handle button interactions
@@ -688,5 +907,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
     }
 });
+
+// Helper function to calculate average rating
+function calculateAverageRating(reviews) {
+    if (reviews.length === 0) return '0.0';
+    const total = reviews.reduce((sum, review) => sum + review.rating, 0);
+    const average = total / reviews.length;
+    return average.toFixed(1);
+}
 
 client.login(process.env.DISCORD_TOKEN);
