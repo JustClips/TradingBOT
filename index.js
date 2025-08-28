@@ -19,7 +19,43 @@ const TRADE_CHANNEL_ID = '1410622424029855867'; // Your specific channel ID
 
 client.once(Events.ClientReady, () => {
     console.log(`✅ Bot is online as ${client.user.tag}`);
+    // Start message cleanup
+    startMessageCleanup();
 });
+
+// Message cleanup function - instant deletion
+client.on(Events.MessageCreate, async (message) => {
+    // Delete non-bot messages in trade channel immediately
+    if (message.channelId === TRADE_CHANNEL_ID && !message.author.bot) {
+        try {
+            await message.delete();
+        } catch (error) {
+            // Ignore errors
+        }
+    }
+});
+
+// Start periodic cleanup for any missed messages
+function startMessageCleanup() {
+    setInterval(async () => {
+        try {
+            const channel = await client.channels.fetch(TRADE_CHANNEL_ID);
+            const messages = await channel.messages.fetch({ limit: 50 });
+            
+            messages.forEach(async (message) => {
+                if (!message.author.bot) {
+                    try {
+                        await message.delete();
+                    } catch (error) {
+                        // Ignore errors
+                    }
+                }
+            });
+        } catch (error) {
+            console.error('Periodic cleanup error:', error);
+        }
+    }, 10000); // Check every 10 seconds
+}
 
 // Register slash commands
 client.on(Events.ClientReady, async () => {
@@ -29,6 +65,14 @@ client.on(Events.ClientReady, async () => {
                 name: 'trade',
                 description: 'Create a new trade post',
             },
+            {
+                name: 'mytrades',
+                description: 'View your active trades',
+            },
+            {
+                name: 'activetrades',
+                description: 'View all active trades',
+            }
         ];
 
         await client.application.commands.set(commands);
@@ -38,14 +82,14 @@ client.on(Events.ClientReady, async () => {
     }
 });
 
-// Handle slash command
+// Handle slash commands
 client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isChatInputCommand()) {
         if (interaction.commandName === 'trade') {
             // Check if command is used in the correct channel
             if (interaction.channelId !== TRADE_CHANNEL_ID) {
                 await interaction.reply({ 
-                    content: `This command can only be used in the trading channel!`, 
+                    content: `⚠️ This command can only be used in <#${TRADE_CHANNEL_ID}>`, 
                     ephemeral: true 
                 });
                 return;
@@ -54,49 +98,99 @@ client.on(Events.InteractionCreate, async (interaction) => {
             // Create modal for trade creation
             const modal = new ModalBuilder()
                 .setCustomId('tradeModal')
-                .setTitle('Create Trade Post');
-
-            // What they want field
-            const wantInput = new TextInputBuilder()
-                .setCustomId('wantInput')
-                .setLabel('What do you want?')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true)
-                .setPlaceholder('Enter what you want to receive');
-
-            // What they offer field
-            const offerInput = new TextInputBuilder()
-                .setCustomId('offerInput')
-                .setLabel('What do you offer?')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true)
-                .setPlaceholder('Enter what you want to trade');
-
-            // Image URL field (optional)
-            const imageInput = new TextInputBuilder()
-                .setCustomId('imageInput')
-                .setLabel('Image URL (optional)')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(false)
-                .setPlaceholder('Paste image URL here');
-
-            // Description field
-            const descriptionInput = new TextInputBuilder()
-                .setCustomId('descriptionInput')
-                .setLabel('Description (optional)')
-                .setStyle(TextInputStyle.Paragraph)
-                .setRequired(false)
-                .setPlaceholder('Add any additional details about your trade');
-
-            // Add components to modal
-            const firstActionRow = new ActionRowBuilder().addComponents(wantInput);
-            const secondActionRow = new ActionRowBuilder().addComponents(offerInput);
-            const thirdActionRow = new ActionRowBuilder().addComponents(imageInput);
-            const fourthActionRow = new ActionRowBuilder().addComponents(descriptionInput);
-
-            modal.addComponents(firstActionRow, secondActionRow, thirdActionRow, fourthActionRow);
+                .setTitle('Create Trade Post')
+                .addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('wantInput')
+                            .setLabel('Looking For')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(true)
+                            .setPlaceholder('What you want to receive')
+                            .setMaxLength(100)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('offerInput')
+                            .setLabel('Offering')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(true)
+                            .setPlaceholder('What you are offering')
+                            .setMaxLength(100)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('imageInput')
+                            .setLabel('Image URL (Optional)')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(false)
+                            .setPlaceholder('Direct image link')
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('descriptionInput')
+                            .setLabel('Description (Optional)')
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setRequired(false)
+                            .setPlaceholder('Additional details...')
+                            .setMaxLength(500)
+                    )
+                );
 
             await interaction.showModal(modal);
+        }
+
+        // View my trades command
+        if (interaction.commandName === 'mytrades') {
+            const userTrades = [];
+            activeTrades.forEach((trade, key) => {
+                if (trade.traderId === interaction.user.id) {
+                    userTrades.push(trade);
+                }
+            });
+
+            if (userTrades.length === 0) {
+                await interaction.reply({ 
+                    content: '❌ You have no active trades.', 
+                    ephemeral: true 
+                });
+                return;
+            }
+
+            let tradeList = '**Your Active Trades:**\n\n';
+            userTrades.forEach((trade, index) => {
+                tradeList += `${index + 1}. **${trade.offer}** → **${trade.want}** (<t:${Math.floor(trade.timestamp / 1000)}:R>)\n`;
+            });
+
+            await interaction.reply({ 
+                content: tradeList, 
+                ephemeral: true 
+            });
+        }
+
+        // View all active trades
+        if (interaction.commandName === 'activetrades') {
+            const totalTrades = activeTrades.size;
+            
+            if (totalTrades === 0) {
+                await interaction.reply({ 
+                    content: '❌ No active trades at the moment.', 
+                    ephemeral: true 
+                });
+                return;
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle('📊 Active Trades Overview')
+                .setDescription(`There are currently **${totalTrades}** active trades.`)
+                .setColor('#5865F2')
+                .setFooter({ text: `Trade System`, iconURL: client.user.displayAvatarURL() })
+                .setTimestamp();
+
+            await interaction.reply({ 
+                embeds: [embed], 
+                ephemeral: true 
+            });
         }
     }
 
@@ -106,14 +200,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
             const want = interaction.fields.getTextInputValue('wantInput');
             const offer = interaction.fields.getTextInputValue('offerInput');
             const imageUrl = interaction.fields.getTextInputValue('imageInput') || '';
-            const description = interaction.fields.getTextInputValue('descriptionInput') || 'No description provided';
+            const description = interaction.fields.getTextInputValue('descriptionInput') || '';
 
             // Validate image URL if provided
             let validImageUrl = '';
             if (imageUrl) {
                 try {
-                    new URL(imageUrl);
-                    if (imageUrl.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
+                    const url = new URL(imageUrl);
+                    if (imageUrl.match(/\.(jpeg|jpg|gif|png|webp)(\?.*)?$/i)) {
                         validImageUrl = imageUrl;
                     }
                 } catch (e) {
@@ -121,34 +215,58 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 }
             }
 
-            // Create trade embed
+            // Create professional trade embed
             const tradeEmbed = new EmbedBuilder()
-                .setTitle('New Trade Offer')
+                .setTitle('💱 NEW TRADE OFFER')
                 .setDescription(`**Trader:** <@${interaction.user.id}>`)
+                .setColor('#2B2D31')
+                .setAuthor({ 
+                    name: interaction.user.username, 
+                    iconURL: interaction.user.displayAvatarURL({ dynamic: true, size: 256 }) 
+                })
                 .addFields(
-                    { name: 'Wants', value: want, inline: true },
-                    { name: 'Offers', value: offer, inline: true },
-                    { name: 'Description', value: description, inline: false },
-                    { name: 'Posted', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: false }
-                )
-                .setColor('#0099ff')
-                .setFooter({ text: `Trade ID: ${interaction.user.id}` });
+                    { 
+                        name: '📦 Offering', 
+                        value: offer, 
+                        inline: false 
+                    },
+                    { 
+                        name: '🔍 Looking For', 
+                        value: want, 
+                        inline: false 
+                    }
+                );
 
             // Add image if valid
             if (validImageUrl) {
                 tradeEmbed.setImage(validImageUrl);
             }
 
-            // Create action buttons
+            // Add description if provided
+            if (description) {
+                tradeEmbed.addFields({
+                    name: '📝 Description', 
+                    value: description, 
+                    inline: false 
+                });
+            }
+
+            // Add footer with timestamp
+            tradeEmbed.setFooter({ 
+                text: `ID: ${interaction.user.id.slice(-6)} • Posted: ${new Date().toLocaleTimeString()}`, 
+                iconURL: client.user.displayAvatarURL() 
+            });
+
+            // Create action buttons with emojis
             const actionRow = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
                         .setCustomId(`contact_${interaction.user.id}`)
-                        .setLabel('Contact Trader')
+                        .setLabel('💬 Contact Trader')
                         .setStyle(ButtonStyle.Success),
                     new ButtonBuilder()
                         .setCustomId(`cancel_${interaction.user.id}`)
-                        .setLabel('Cancel Trade')
+                        .setLabel('❌ Cancel Trade')
                         .setStyle(ButtonStyle.Danger)
                 );
 
@@ -174,14 +292,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 });
 
                 await interaction.reply({
-                    content: 'Trade post created successfully!',
+                    content: '✅ **Trade created successfully!** Your post is now live.',
                     ephemeral: true
                 });
 
             } catch (error) {
                 console.error('Error creating trade post:', error);
                 await interaction.reply({
-                    content: 'Failed to create trade post. Please try again.',
+                    content: '❌ **Failed to create trade post.** Please try again.',
                     ephemeral: true
                 });
             }
@@ -196,12 +314,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
             const tradeData = activeTrades.get(traderId);
             
             if (!tradeData) {
-                await interaction.reply({ content: 'This trade is no longer active!', ephemeral: true });
+                await interaction.reply({ 
+                    content: '❌ This trade is no longer active!', 
+                    ephemeral: true 
+                });
                 return;
             }
 
             if (interaction.user.id === traderId) {
-                await interaction.reply({ content: 'You cannot contact yourself!', ephemeral: true });
+                await interaction.reply({ 
+                    content: '❌ You cannot contact yourself!', 
+                    ephemeral: true 
+                });
                 return;
             }
 
@@ -209,51 +333,91 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 // DM the trader
                 const trader = await client.users.fetch(traderId);
                 const traderEmbed = new EmbedBuilder()
-                    .setTitle('Trade Contact')
-                    .setDescription(`${interaction.user.username} is interested in your trade!`)
+                    .setTitle('🤝 Trade Interest')
+                    .setDescription(`**${interaction.user.username}** is interested in your trade!`)
+                    .setColor('#57F287')
+                    .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true, size: 128 }))
                     .addFields(
-                        { name: 'Interested User', value: interaction.user.username, inline: true },
-                        { name: 'Trade Details', value: `Wants: ${tradeData.want}\nOffers: ${tradeData.offer}`, inline: true }
+                        { 
+                            name: '👤 Interested User', 
+                            value: `${interaction.user.username} (${interaction.user})`, 
+                            inline: true 
+                        },
+                        { 
+                            name: '💱 Trade Details', 
+                            value: `**Offering:** ${tradeData.offer}\n**Looking For:** ${tradeData.want}`, 
+                            inline: true 
+                        }
                     )
-                    .setColor('#0099ff');
+                    .setFooter({ 
+                        text: 'Trade System', 
+                        iconURL: client.user.displayAvatarURL() 
+                    })
+                    .setTimestamp();
 
                 await trader.send({
-                    content: `Someone is interested in your trade:`,
+                    content: `## 💬 New Trade Interest!\nSomeone is interested in your trade:`,
                     embeds: [traderEmbed]
                 });
 
                 // DM the interested user
                 const interestedEmbed = new EmbedBuilder()
-                    .setTitle('Trade Contact')
-                    .setDescription(`You contacted ${tradeData.traderUsername} about their trade!`)
+                    .setTitle('🤝 Trade Connection')
+                    .setDescription(`You contacted **${tradeData.traderUsername}** about their trade!`)
+                    .setColor('#57F287')
+                    .setThumbnail(tradeData.imageUrl || interaction.user.displayAvatarURL({ dynamic: true, size: 128 }))
                     .addFields(
-                        { name: 'Trader', value: tradeData.traderUsername, inline: true },
-                        { name: 'Trade Details', value: `Wants: ${tradeData.want}\nOffers: ${tradeData.offer}`, inline: true }
+                        { 
+                            name: '👤 Trader', 
+                            value: `${tradeData.traderUsername} (${trader})`, 
+                            inline: true 
+                        },
+                        { 
+                            name: '💱 Trade Details', 
+                            value: `**Offering:** ${tradeData.offer}\n**Looking For:** ${tradeData.want}`, 
+                            inline: true 
+                        }
                     )
-                    .setColor('#0099ff');
+                    .setFooter({ 
+                        text: 'Trade System', 
+                        iconURL: client.user.displayAvatarURL() 
+                    })
+                    .setTimestamp();
 
                 await interaction.user.send({
-                    content: `You can now communicate with the trader:`,
+                    content: `## 💬 Trade Connection Established!\nYou can now communicate with the trader:`,
                     embeds: [interestedEmbed]
                 });
 
-                await interaction.reply({ content: 'Check your DMs! You and the trader have been notified.', ephemeral: true });
+                await interaction.reply({ 
+                    content: '✅ Check your DMs! You and the trader have been notified.', 
+                    ephemeral: true 
+                });
 
             } catch (error) {
                 console.error('DM Error:', error);
-                await interaction.reply({ content: 'Unable to send DMs. Please make sure both users have DMs enabled.', ephemeral: true });
+                await interaction.reply({ 
+                    content: '❌ Unable to send DMs. Please make sure both users have DMs enabled.', 
+                    ephemeral: true 
+                });
             }
         }
 
         if (action === 'cancel') {
             if (interaction.user.id !== traderId) {
-                await interaction.reply({ content: 'You can only cancel your own trades!', ephemeral: true });
+                await interaction.reply({ 
+                    content: '❌ You can only cancel your own trades!', 
+                    ephemeral: true 
+                });
                 return;
             }
 
             const tradeData = activeTrades.get(traderId);
             if (!tradeData) {
-                await interaction.reply({ content: 'This trade is no longer active!', ephemeral: true });
+                await interaction.reply({ 
+                    content: '❌ This trade is no longer active!', 
+                    ephemeral: true 
+                });
                 return;
             }
 
@@ -266,33 +430,61 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 const message = await channel.messages.fetch(tradeData.messageId);
                 
                 const cancelledEmbed = new EmbedBuilder()
-                    .setTitle('Trade Cancelled')
+                    .setTitle('❌ TRADE CANCELLED')
                     .setDescription(`**Trader:** <@${tradeData.traderId}>`)
+                    .setColor('#ED4245')
+                    .setAuthor({ 
+                        name: tradeData.traderUsername, 
+                        iconURL: interaction.user.displayAvatarURL({ dynamic: true, size: 256 }) 
+                    })
                     .addFields(
-                        { name: 'Wants', value: tradeData.want, inline: true },
-                        { name: 'Offers', value: tradeData.offer, inline: true },
-                        { name: 'Description', value: tradeData.description, inline: false },
-                        { name: 'Posted', value: `<t:${Math.floor(tradeData.timestamp / 1000)}:R>`, inline: true },
-                        { name: 'Cancelled', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
-                    )
-                    .setColor('#ff0000')
-                    .setFooter({ text: 'This trade has been cancelled' });
+                        { 
+                            name: '📦 Offering', 
+                            value: tradeData.offer, 
+                            inline: false 
+                        },
+                        { 
+                            name: '🔍 Looking For', 
+                            value: tradeData.want, 
+                            inline: false 
+                        }
+                    );
 
                 // Add image if it existed
                 if (tradeData.imageUrl) {
                     cancelledEmbed.setImage(tradeData.imageUrl);
                 }
 
+                // Add description if it existed
+                if (tradeData.description) {
+                    cancelledEmbed.addFields({
+                        name: '📝 Description', 
+                        value: tradeData.description, 
+                        inline: false 
+                    });
+                }
+
+                cancelledEmbed.setFooter({ 
+                    text: `Cancelled at ${new Date().toLocaleTimeString()}`, 
+                    iconURL: client.user.displayAvatarURL() 
+                });
+
                 await message.edit({
                     embeds: [cancelledEmbed],
                     components: []
                 });
 
-                await interaction.reply({ content: 'Your trade has been cancelled!', ephemeral: true });
+                await interaction.reply({ 
+                    content: '✅ Your trade has been cancelled!', 
+                    ephemeral: true 
+                });
 
             } catch (error) {
                 console.error('Cancel Error:', error);
-                await interaction.reply({ content: 'Trade cancelled!', ephemeral: true });
+                await interaction.reply({ 
+                    content: '✅ Trade cancelled!', 
+                    ephemeral: true 
+                });
             }
         }
     }
