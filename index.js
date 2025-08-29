@@ -21,7 +21,8 @@ const activeTickets = new Map(); // channelId -> {userId, ownerId}
 const TRADE_CHANNEL_ID = '1410622424029855867';
 const SUGGESTION_CHANNEL_ID = '1410693106608902216';
 const REVIEW_CHANNEL_ID = '1410697592475488338';
-const TICKET_CHANNEL_ID = '1410983240428163251';
+const TICKET_PANEL_CHANNEL_ID = '1410983240428163251'; // Where panel is shown
+const TICKET_CREATION_CATEGORY_ID = '1410983107279978567'; // Where tickets are created
 const OWNER_USER_ID = 'YOUR_OWNER_ID_HERE'; // Replace with actual owner ID
 
 client.once(Events.ClientReady, () => {
@@ -33,7 +34,7 @@ client.once(Events.ClientReady, () => {
 // Message cleanup function - instant deletion
 client.on(Events.MessageCreate, async (message) => {
     // Delete non-bot messages in all protected channels immediately
-    const protectedChannels = [TRADE_CHANNEL_ID, SUGGESTION_CHANNEL_ID, REVIEW_CHANNEL_ID, TICKET_CHANNEL_ID];
+    const protectedChannels = [TRADE_CHANNEL_ID, SUGGESTION_CHANNEL_ID, REVIEW_CHANNEL_ID, TICKET_PANEL_CHANNEL_ID];
     if (protectedChannels.includes(message.channelId) && !message.author.bot) {
         try {
             await message.delete();
@@ -87,13 +88,13 @@ async function updateSuggestionVoteCount(message) {
     } catch (error) {
         console.error('Error updating suggestion vote count:', error);
     }
-}
+});
 
 // Start periodic cleanup for any missed messages
 function startMessageCleanup() {
     setInterval(async () => {
         try {
-            const protectedChannels = [TRADE_CHANNEL_ID, SUGGESTION_CHANNEL_ID, REVIEW_CHANNEL_ID, TICKET_CHANNEL_ID];
+            const protectedChannels = [TRADE_CHANNEL_ID, SUGGESTION_CHANNEL_ID, REVIEW_CHANNEL_ID, TICKET_PANEL_CHANNEL_ID];
             
             for (const channelId of protectedChannels) {
                 const channel = await client.channels.fetch(channelId);
@@ -174,9 +175,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
             }
 
             // Check if command is used in the correct channel
-            if (interaction.channelId !== TICKET_CHANNEL_ID) {
+            if (interaction.channelId !== TICKET_PANEL_CHANNEL_ID) {
                 await interaction.reply({ 
-                    content: `⚠️ This command can only be used in <#${TICKET_CHANNEL_ID}>`, 
+                    content: `⚠️ This command can only be used in <#${TICKET_PANEL_CHANNEL_ID}>`, 
                     ephemeral: true 
                 });
                 return;
@@ -218,7 +219,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             } catch (error) {
                 console.error('Error creating ticket panel:', error);
                 await interaction.reply({
-                    content: '❌ Failed to create ticket panel.',
+                    content: '❌ Failed to create ticket panel. Make sure the bot has proper permissions.',
                     ephemeral: true
                 });
             }
@@ -838,50 +839,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 });
             }
         }
-    }
-
-    // Handle button interactions
-    if (interaction.isButton()) {
-        // Handle ticket panel button
-        if (interaction.customId === 'createTicket') {
-            // Check if command is used in the correct channel
-            if (interaction.channelId !== TICKET_CHANNEL_ID) {
-                await interaction.reply({ 
-                    content: `⚠️ This button can only be used in <#${TICKET_CHANNEL_ID}>`, 
-                    ephemeral: true 
-                });
-                return;
-            }
-
-            // Create modal for ticket creation
-            const modal = new ModalBuilder()
-                .setCustomId('ticketModal')
-                .setTitle('Create Ticket')
-                .addComponents(
-                    new ActionRowBuilder().addComponents(
-                        new TextInputBuilder()
-                            .setCustomId('subjectInput')
-                            .setLabel('Subject')
-                            .setStyle(TextInputStyle.Short)
-                            .setRequired(true)
-                            .setPlaceholder('Brief subject of your ticket')
-                            .setMaxLength(100)
-                    ),
-                    new ActionRowBuilder().addComponents(
-                        new TextInputBuilder()
-                            .setCustomId('descriptionInput')
-                            .setLabel('Description')
-                            .setStyle(TextInputStyle.Paragraph)
-                            .setRequired(true)
-                            .setPlaceholder('Describe what you need help with...')
-                            .setMaxLength(1000)
-                            .setMinLength(10)
-                    )
-                );
-
-            await interaction.showModal(modal);
-            return;
-        }
 
         // Handle ticket modal submission
         if (interaction.customId === 'ticketModal') {
@@ -894,7 +851,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 const ticketChannel = await guild.channels.create({
                     name: `ticket-${interaction.user.username}`,
                     type: ChannelType.GuildText,
-                    parent: interaction.channel.parentId,
+                    parent: TICKET_CREATION_CATEGORY_ID, // Use the correct category ID
                     permissionOverwrites: [
                         {
                             id: guild.id,
@@ -987,10 +944,53 @@ client.on(Events.InteractionCreate, async (interaction) => {
             } catch (error) {
                 console.error('Error creating ticket:', error);
                 await interaction.reply({
-                    content: '❌ **Failed to create ticket.** Please try again.',
+                    content: '❌ **Failed to create ticket.** Please try again. Error: ' + error.message,
                     ephemeral: true
                 });
             }
+        }
+    }
+
+    // Handle button interactions
+    if (interaction.isButton()) {
+        // Handle ticket panel button
+        if (interaction.customId === 'createTicket') {
+            // Check if button is used in the correct channel
+            if (interaction.channelId !== TICKET_PANEL_CHANNEL_ID) {
+                await interaction.reply({ 
+                    content: `⚠️ This button can only be used in <#${TICKET_PANEL_CHANNEL_ID}>`, 
+                    ephemeral: true 
+                });
+                return;
+            }
+
+            // Create modal for ticket creation
+            const modal = new ModalBuilder()
+                .setCustomId('ticketModal')
+                .setTitle('Create Ticket')
+                .addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('subjectInput')
+                            .setLabel('Subject')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(true)
+                            .setPlaceholder('Brief subject of your ticket')
+                            .setMaxLength(100)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('descriptionInput')
+                            .setLabel('Description')
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setRequired(true)
+                            .setPlaceholder('Describe what you need help with...')
+                            .setMaxLength(1000)
+                            .setMinLength(10)
+                    )
+                );
+
+            await interaction.showModal();
             return;
         }
 
