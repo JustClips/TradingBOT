@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType, PermissionFlagsBits } = require('discord.js');
 
 console.log('🚀 Bot starting...');
 
@@ -14,12 +14,15 @@ const client = new Client({
     ],
 });
 
-// Store active trades and reviews
+// Store active trades, reviews, and tickets
 const activeTrades = new Map();
 const userReviews = new Map(); // userId -> reviewMessageId
+const activeTickets = new Map(); // channelId -> {userId, ownerId}
 const TRADE_CHANNEL_ID = '1410622424029855867';
 const SUGGESTION_CHANNEL_ID = '1410693106608902216';
 const REVIEW_CHANNEL_ID = '1410697592475488338';
+const TICKET_CHANNEL_ID = '1410983240428163251';
+const OWNER_USER_ID = 'YOUR_OWNER_ID_HERE'; // Replace with actual owner ID
 
 client.once(Events.ClientReady, () => {
     console.log(`✅ Bot is online as ${client.user.tag}`);
@@ -30,7 +33,7 @@ client.once(Events.ClientReady, () => {
 // Message cleanup function - instant deletion
 client.on(Events.MessageCreate, async (message) => {
     // Delete non-bot messages in all protected channels immediately
-    const protectedChannels = [TRADE_CHANNEL_ID, SUGGESTION_CHANNEL_ID, REVIEW_CHANNEL_ID];
+    const protectedChannels = [TRADE_CHANNEL_ID, SUGGESTION_CHANNEL_ID, REVIEW_CHANNEL_ID, TICKET_CHANNEL_ID];
     if (protectedChannels.includes(message.channelId) && !message.author.bot) {
         try {
             await message.delete();
@@ -40,11 +43,57 @@ client.on(Events.MessageCreate, async (message) => {
     }
 });
 
+// Handle reaction updates for suggestions
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+    if (reaction.message.channelId === SUGGESTION_CHANNEL_ID) {
+        if (reaction.emoji.name === '⭐') {
+            await updateSuggestionVoteCount(reaction.message);
+        }
+    }
+});
+
+client.on(Events.MessageReactionRemove, async (reaction, user) => {
+    if (reaction.message.channelId === SUGGESTION_CHANNEL_ID) {
+        if (reaction.emoji.name === '⭐') {
+            await updateSuggestionVoteCount(reaction.message);
+        }
+    }
+});
+
+// Update suggestion vote count
+async function updateSuggestionVoteCount(message) {
+    try {
+        if (message.partial) await message.fetch();
+        
+        const starCount = message.reactions.cache.get('⭐')?.count || 0;
+        
+        if (message.embeds.length > 0 && message.embeds[0].title === '💡 New Suggestion') {
+            const embed = message.embeds[0];
+            
+            const updatedEmbed = new EmbedBuilder()
+                .setTitle(embed.title)
+                .setColor(embed.color)
+                .setAuthor(embed.author)
+                .addFields(
+                    { name: 'Suggestion', value: embed.fields[0].value, inline: false },
+                    { name: 'Submitted', value: embed.fields[1].value, inline: true },
+                    { name: 'Votes', value: `\`${starCount} ⭐\``, inline: true }
+                )
+                .setFooter(embed.footer)
+                .setTimestamp(embed.timestamp);
+
+            await message.edit({ embeds: [updatedEmbed] });
+        }
+    } catch (error) {
+        console.error('Error updating suggestion vote count:', error);
+    }
+}
+
 // Start periodic cleanup for any missed messages
 function startMessageCleanup() {
     setInterval(async () => {
         try {
-            const protectedChannels = [TRADE_CHANNEL_ID, SUGGESTION_CHANNEL_ID, REVIEW_CHANNEL_ID];
+            const protectedChannels = [TRADE_CHANNEL_ID, SUGGESTION_CHANNEL_ID, REVIEW_CHANNEL_ID, TICKET_CHANNEL_ID];
             
             for (const channelId of protectedChannels) {
                 const channel = await client.channels.fetch(channelId);
@@ -96,6 +145,10 @@ client.on(Events.ClientReady, async () => {
             {
                 name: 'reviewboard',
                 description: 'View all reviews',
+            },
+            {
+                name: 'ticket',
+                description: 'Create a ticket to contact the owner',
             }
         ];
 
@@ -253,6 +306,46 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await interaction.showModal(modal);
         }
 
+        // Ticket command
+        if (interaction.commandName === 'ticket') {
+            // Check if command is used in the correct channel
+            if (interaction.channelId !== TICKET_CHANNEL_ID) {
+                await interaction.reply({ 
+                    content: `⚠️ This command can only be used in <#${TICKET_CHANNEL_ID}>`, 
+                    ephemeral: true 
+                });
+                return;
+            }
+
+            // Create modal for ticket creation
+            const modal = new ModalBuilder()
+                .setCustomId('ticketModal')
+                .setTitle('Create Ticket')
+                .addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('subjectInput')
+                            .setLabel('Subject')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(true)
+                            .setPlaceholder('Brief subject of your ticket')
+                            .setMaxLength(100)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('descriptionInput')
+                            .setLabel('Description')
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setRequired(true)
+                            .setPlaceholder('Describe what you need help with...')
+                            .setMaxLength(1000)
+                            .setMinLength(10)
+                    )
+                );
+
+            await interaction.showModal(modal);
+        }
+
         // Review board command
         if (interaction.commandName === 'reviewboard') {
             // Check if command is used in the correct channel
@@ -273,7 +366,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 for (const [id, message] of messages) {
                     if (message.embeds.length > 0 && message.embeds[0].title === '⭐ Script Review') {
                         const embed = message.embeds[0];
-                        const rating = parseInt(embed.fields.find(f => f.name === 'Rating')?.value || '0');
+                        const rating = parseInt(embed.fields.find(f => f.name === 'Rating')?.value.split('/')[0].replace(/[^0-9]/g, '') || '0');
                         reviews.push({
                             message: message,
                             embed: embed,
@@ -722,185 +815,451 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 });
             }
         }
+
+        // Handle ticket modal submission
+        if (interaction.customId === 'ticketModal') {
+            const subject = interaction.fields.getTextInputValue('subjectInput');
+            const description = interaction.fields.getTextInputValue('descriptionInput');
+
+            try {
+                // Create private ticket channel
+                const guild = interaction.guild;
+                const ticketChannel = await guild.channels.create({
+                    name: `ticket-${interaction.user.username}`,
+                    type: ChannelType.GuildText,
+                    parent: interaction.channel.parentId,
+                    permissionOverwrites: [
+                        {
+                            id: guild.id,
+                            deny: [PermissionFlagsBits.ViewChannel],
+                        },
+                        {
+                            id: interaction.user.id,
+                            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+                        },
+                        {
+                            id: client.user.id,
+                            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels],
+                        },
+                        {
+                            id: OWNER_USER_ID, // Owner ID
+                            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+                        }
+                    ],
+                });
+
+                // Store ticket info
+                activeTickets.set(ticketChannel.id, {
+                    userId: interaction.user.id,
+                    ownerId: OWNER_USER_ID,
+                    subject: subject,
+                    timestamp: Date.now()
+                });
+
+                // Create ticket embed
+                const ticketEmbed = new EmbedBuilder()
+                    .setTitle('🎫 Support Ticket')
+                    .setDescription(`**Created by:** <@${interaction.user.id}>\n**Subject:** ${subject}`)
+                    .setColor('#5865F2')
+                    .addFields(
+                        { name: 'Description', value: description, inline: false },
+                        { name: 'Created', value: `<t:${Math.floor(Date.now() / 1000)}:f>`, inline: true },
+                        { name: 'Status', value: '🟢 Open', inline: true }
+                    )
+                    .setFooter({ text: `Ticket ID: ${ticketChannel.id.slice(-6)}` })
+                    .setTimestamp();
+
+                // Create action buttons
+                const actionRow = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`closeTicket_${ticketChannel.id}`)
+                            .setLabel('🔒 Close Ticket')
+                            .setStyle(ButtonStyle.Danger),
+                        new ButtonBuilder()
+                            .setCustomId(`contactOwner_${ticketChannel.id}`)
+                            .setLabel('👤 Contact Owner')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+
+                // Send ticket message
+                await ticketChannel.send({
+                    content: `<@${interaction.user.id}> <@${OWNER_USER_ID}>`,
+                    embeds: [ticketEmbed],
+                    components: [actionRow]
+                });
+
+                // Send confirmation to user
+                await interaction.reply({
+                    content: `✅ **Ticket created successfully!** Please check <#${ticketChannel.id}> to continue.`,
+                    ephemeral: true
+                });
+
+                // Send agreement message in ticket channel
+                const agreementEmbed = new EmbedBuilder()
+                    .setTitle('⚠️ Ticket Agreement')
+                    .setDescription('**Please read and agree to the following:**\n\n• This ticket is for legitimate support only\n• Abuse of this system will result in a permanent ban\n• Provide clear and detailed information\n• Be respectful to staff members')
+                    .setColor('#FFA500')
+                    .addFields(
+                        { name: 'Do you agree to these terms?', value: 'Click the button below to confirm' }
+                    );
+
+                const agreementRow = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`agreeTicket_${ticketChannel.id}`)
+                            .setLabel('✅ I Agree')
+                            .setStyle(ButtonStyle.Success)
+                    );
+
+                await ticketChannel.send({
+                    embeds: [agreementEmbed],
+                    components: [agreementRow]
+                });
+
+            } catch (error) {
+                console.error('Error creating ticket:', error);
+                await interaction.reply({
+                    content: '❌ **Failed to create ticket.** Please try again.',
+                    ephemeral: true
+                });
+            }
+        }
     }
 
     // Handle button interactions
     if (interaction.isButton()) {
-        const [action, traderId] = interaction.customId.split('_');
+        const [action, id] = interaction.customId.split('_');
 
-        if (action === 'contact') {
-            const tradeData = activeTrades.get(traderId);
-            
-            if (!tradeData) {
-                await interaction.reply({ 
-                    content: '❌ This trade is no longer active!', 
-                    ephemeral: true 
-                });
-                return;
+        // Handle trade buttons
+        if (action === 'contact' || action === 'cancel') {
+            const traderId = id;
+            if (action === 'contact') {
+                const tradeData = activeTrades.get(traderId);
+                
+                if (!tradeData) {
+                    await interaction.reply({ 
+                        content: '❌ This trade is no longer active!', 
+                        ephemeral: true 
+                    });
+                    return;
+                }
+
+                if (interaction.user.id === traderId) {
+                    await interaction.reply({ 
+                        content: '❌ You cannot contact yourself!', 
+                        ephemeral: true 
+                    });
+                    return;
+                }
+
+                try {
+                    // DM the trader
+                    const trader = await client.users.fetch(traderId);
+                    const traderEmbed = new EmbedBuilder()
+                        .setTitle('🤝 Trade Interest')
+                        .setDescription(`**${interaction.user.username}** is interested in your trade!`)
+                        .setColor('#57F287')
+                        .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true, size: 128 }))
+                        .addFields(
+                            { 
+                                name: '👤 Interested User', 
+                                value: `${interaction.user.username} (${interaction.user})`, 
+                                inline: true 
+                            },
+                            { 
+                                name: '💱 Trade Details', 
+                                value: `**Offering:** ${tradeData.offer}\n**Looking For:** ${tradeData.want}`, 
+                                inline: true 
+                            }
+                        )
+                        .setFooter({ 
+                            text: 'Trade System', 
+                            iconURL: client.user.displayAvatarURL() 
+                        })
+                        .setTimestamp();
+
+                    await trader.send({
+                        content: `## 💬 New Trade Interest!\nSomeone is interested in your trade:`,
+                        embeds: [traderEmbed]
+                    });
+
+                    // DM the interested user
+                    const interestedEmbed = new EmbedBuilder()
+                        .setTitle('🤝 Trade Connection')
+                        .setDescription(`You contacted **${tradeData.traderUsername}** about their trade!`)
+                        .setColor('#57F287')
+                        .setThumbnail(tradeData.imageUrl || interaction.user.displayAvatarURL({ dynamic: true, size: 128 }))
+                        .addFields(
+                            { 
+                                name: '👤 Trader', 
+                                value: `${tradeData.traderUsername} (${trader})`, 
+                                inline: true 
+                            },
+                            { 
+                                name: '💱 Trade Details', 
+                                value: `**Offering:** ${tradeData.offer}\n**Looking For:** ${tradeData.want}`, 
+                                inline: true 
+                            }
+                        )
+                        .setFooter({ 
+                            text: 'Trade System', 
+                            iconURL: client.user.displayAvatarURL() 
+                        })
+                        .setTimestamp();
+
+                    await interaction.user.send({
+                        content: `## 💬 Trade Connection Established!\nYou can now communicate with the trader:`,
+                        embeds: [interestedEmbed]
+                    });
+
+                    await interaction.reply({ 
+                        content: '✅ Check your DMs! You and the trader have been notified.', 
+                        ephemeral: true 
+                    });
+
+                } catch (error) {
+                    console.error('DM Error:', error);
+                    await interaction.reply({ 
+                        content: '❌ Unable to send DMs. Please make sure both users have DMs enabled.', 
+                        ephemeral: true 
+                    });
+                }
             }
 
-            if (interaction.user.id === traderId) {
+            if (action === 'cancel') {
+                if (interaction.user.id !== traderId) {
+                    await interaction.reply({ 
+                        content: '❌ You can only cancel your own trades!', 
+                        ephemeral: true 
+                    });
+                    return;
+                }
+
+                const tradeData = activeTrades.get(traderId);
+                if (!tradeData) {
+                    await interaction.reply({ 
+                        content: '❌ This trade is no longer active!', 
+                        ephemeral: true 
+                    });
+                    return;
+                }
+
+                // Remove the trade
+                activeTrades.delete(traderId);
+
+                // Update the message to show it's cancelled
+                try {
+                    const channel = await client.channels.fetch(tradeData.channelId);
+                    const message = await channel.messages.fetch(tradeData.messageId);
+                    
+                    const cancelledEmbed = new EmbedBuilder()
+                        .setTitle('❌ TRADE CANCELLED')
+                        .setDescription(`**Trader:** <@${tradeData.traderId}>`)
+                        .setColor('#ED4245')
+                        .setAuthor({ 
+                            name: tradeData.traderUsername, 
+                            iconURL: interaction.user.displayAvatarURL({ dynamic: true, size: 256 }) 
+                        })
+                        .addFields(
+                            { 
+                                name: '📦 Offering', 
+                                value: tradeData.offer, 
+                                inline: false 
+                            },
+                            { 
+                                name: '🔍 Looking For', 
+                                value: tradeData.want, 
+                                inline: false 
+                            }
+                        );
+
+                    // Add image if it existed
+                    if (tradeData.imageUrl) {
+                        cancelledEmbed.setImage(tradeData.imageUrl);
+                    }
+
+                    // Add description if it existed
+                    if (tradeData.description) {
+                        cancelledEmbed.addFields({
+                            name: '📝 Description', 
+                            value: tradeData.description, 
+                            inline: false 
+                        });
+                    }
+
+                    cancelledEmbed.setFooter({ 
+                        text: `Cancelled at ${new Date().toLocaleTimeString()}`, 
+                        iconURL: client.user.displayAvatarURL() 
+                    });
+
+                    await message.edit({
+                        embeds: [cancelledEmbed],
+                        components: []
+                    });
+
+                    await interaction.reply({ 
+                        content: '✅ Your trade has been cancelled!', 
+                        ephemeral: true 
+                    });
+
+                } catch (error) {
+                    console.error('Cancel Error:', error);
+                    await interaction.reply({ 
+                        content: '✅ Trade cancelled!', 
+                        ephemeral: true 
+                    });
+                }
+            }
+        }
+
+        // Handle ticket buttons
+        if (action === 'closeTicket') {
+            const channelId = id;
+            const ticketData = activeTickets.get(channelId);
+            
+            if (!ticketData) {
                 await interaction.reply({ 
-                    content: '❌ You cannot contact yourself!', 
+                    content: '❌ This ticket is no longer active!', 
                     ephemeral: true 
                 });
                 return;
             }
 
             try {
-                // DM the trader
-                const trader = await client.users.fetch(traderId);
-                const traderEmbed = new EmbedBuilder()
-                    .setTitle('🤝 Trade Interest')
-                    .setDescription(`**${interaction.user.username}** is interested in your trade!`)
-                    .setColor('#57F287')
-                    .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true, size: 128 }))
-                    .addFields(
-                        { 
-                            name: '👤 Interested User', 
-                            value: `${interaction.user.username} (${interaction.user})`, 
-                            inline: true 
-                        },
-                        { 
-                            name: '💱 Trade Details', 
-                            value: `**Offering:** ${tradeData.offer}\n**Looking For:** ${tradeData.want}`, 
-                            inline: true 
-                        }
-                    )
-                    .setFooter({ 
-                        text: 'Trade System', 
-                        iconURL: client.user.displayAvatarURL() 
-                    })
-                    .setTimestamp();
+                const channel = await client.channels.fetch(channelId);
+                
+                // Update ticket embed to show closed status
+                const messages = await channel.messages.fetch({ limit: 100 });
+                const ticketMessage = messages.find(msg => 
+                    msg.embeds.length > 0 && 
+                    msg.embeds[0].title === '🎫 Support Ticket'
+                );
 
-                await trader.send({
-                    content: `## 💬 New Trade Interest!\nSomeone is interested in your trade:`,
-                    embeds: [traderEmbed]
-                });
+                if (ticketMessage) {
+                    const embed = ticketMessage.embeds[0];
+                    const updatedEmbed = new EmbedBuilder()
+                        .setTitle(embed.title)
+                        .setDescription(embed.description)
+                        .setColor('#ED4245')
+                        .addFields(
+                            { name: 'Description', value: embed.fields[0].value, inline: false },
+                            { name: 'Created', value: embed.fields[1].value, inline: true },
+                            { name: 'Status', value: '🔴 Closed', inline: true }
+                        )
+                        .setFooter(embed.footer)
+                        .setTimestamp(embed.timestamp);
 
-                // DM the interested user
-                const interestedEmbed = new EmbedBuilder()
-                    .setTitle('🤝 Trade Connection')
-                    .setDescription(`You contacted **${tradeData.traderUsername}** about their trade!`)
-                    .setColor('#57F287')
-                    .setThumbnail(tradeData.imageUrl || interaction.user.displayAvatarURL({ dynamic: true, size: 128 }))
-                    .addFields(
-                        { 
-                            name: '👤 Trader', 
-                            value: `${tradeData.traderUsername} (${trader})`, 
-                            inline: true 
-                        },
-                        { 
-                            name: '💱 Trade Details', 
-                            value: `**Offering:** ${tradeData.offer}\n**Looking For:** ${tradeData.want}`, 
-                            inline: true 
-                        }
-                    )
-                    .setFooter({ 
-                        text: 'Trade System', 
-                        iconURL: client.user.displayAvatarURL() 
-                    })
-                    .setTimestamp();
+                    await ticketMessage.edit({
+                        embeds: [updatedEmbed],
+                        components: []
+                    });
+                }
 
-                await interaction.user.send({
-                    content: `## 💬 Trade Connection Established!\nYou can now communicate with the trader:`,
-                    embeds: [interestedEmbed]
-                });
+                // Remove ticket from active tickets
+                activeTickets.delete(channelId);
+
+                // Delete channel after delay
+                setTimeout(async () => {
+                    try {
+                        await channel.delete();
+                    } catch (error) {
+                        console.error('Error deleting ticket channel:', error);
+                    }
+                }, 5000);
 
                 await interaction.reply({ 
-                    content: '✅ Check your DMs! You and the trader have been notified.', 
+                    content: '✅ Ticket will be closed in 5 seconds.', 
                     ephemeral: true 
                 });
 
             } catch (error) {
-                console.error('DM Error:', error);
+                console.error('Close ticket error:', error);
                 await interaction.reply({ 
-                    content: '❌ Unable to send DMs. Please make sure both users have DMs enabled.', 
+                    content: '❌ Failed to close ticket.', 
                     ephemeral: true 
                 });
             }
         }
 
-        if (action === 'cancel') {
-            if (interaction.user.id !== traderId) {
+        if (action === 'contactOwner') {
+            const channelId = id;
+            const ticketData = activeTickets.get(channelId);
+            
+            if (!ticketData) {
                 await interaction.reply({ 
-                    content: '❌ You can only cancel your own trades!', 
+                    content: '❌ This ticket is no longer active!', 
                     ephemeral: true 
                 });
                 return;
             }
 
-            const tradeData = activeTrades.get(traderId);
-            if (!tradeData) {
-                await interaction.reply({ 
-                    content: '❌ This trade is no longer active!', 
-                    ephemeral: true 
-                });
-                return;
-            }
-
-            // Remove the trade
-            activeTrades.delete(traderId);
-
-            // Update the message to show it's cancelled
             try {
-                const channel = await client.channels.fetch(tradeData.channelId);
-                const message = await channel.messages.fetch(tradeData.messageId);
+                const channel = await client.channels.fetch(channelId);
+                const owner = await client.users.fetch(ticketData.ownerId);
                 
-                const cancelledEmbed = new EmbedBuilder()
-                    .setTitle('❌ TRADE CANCELLED')
-                    .setDescription(`**Trader:** <@${tradeData.traderId}>`)
-                    .setColor('#ED4245')
-                    .setAuthor({ 
-                        name: tradeData.traderUsername, 
-                        iconURL: interaction.user.displayAvatarURL({ dynamic: true, size: 256 }) 
-                    })
-                    .addFields(
-                        { 
-                            name: '📦 Offering', 
-                            value: tradeData.offer, 
-                            inline: false 
-                        },
-                        { 
-                            name: '🔍 Looking For', 
-                            value: tradeData.want, 
-                            inline: false 
-                        }
-                    );
-
-                // Add image if it existed
-                if (tradeData.imageUrl) {
-                    cancelledEmbed.setImage(tradeData.imageUrl);
-                }
-
-                // Add description if it existed
-                if (tradeData.description) {
-                    cancelledEmbed.addFields({
-                        name: '📝 Description', 
-                        value: tradeData.description, 
-                        inline: false 
-                    });
-                }
-
-                cancelledEmbed.setFooter({ 
-                    text: `Cancelled at ${new Date().toLocaleTimeString()}`, 
-                    iconURL: client.user.displayAvatarURL() 
-                });
-
-                await message.edit({
-                    embeds: [cancelledEmbed],
-                    components: []
+                await channel.send({
+                    content: `🔔 <@${ticketData.ownerId}> has been pinged by <@${interaction.user.id}>`
                 });
 
                 await interaction.reply({ 
-                    content: '✅ Your trade has been cancelled!', 
+                    content: '✅ Owner has been notified!', 
                     ephemeral: true 
                 });
 
             } catch (error) {
-                console.error('Cancel Error:', error);
+                console.error('Contact owner error:', error);
                 await interaction.reply({ 
-                    content: '✅ Trade cancelled!', 
+                    content: '❌ Failed to contact owner.', 
+                    ephemeral: true 
+                });
+            }
+        }
+
+        if (action === 'agreeTicket') {
+            const channelId = id;
+            const ticketData = activeTickets.get(channelId);
+            
+            if (!ticketData) {
+                await interaction.reply({ 
+                    content: '❌ This ticket is no longer active!', 
+                    ephemeral: true 
+                });
+                return;
+            }
+
+            try {
+                const channel = await client.channels.fetch(channelId);
+                
+                await interaction.reply({ 
+                    content: '✅ Thank you for agreeing to the terms. You can now proceed with your support request.', 
+                    ephemeral: true 
+                });
+
+                // Update agreement message
+                const messages = await channel.messages.fetch({ limit: 10 });
+                const agreementMessage = messages.find(msg => 
+                    msg.embeds.length > 0 && 
+                    msg.embeds[0].title === '⚠️ Ticket Agreement'
+                );
+
+                if (agreementMessage) {
+                    const embed = agreementMessage.embeds[0];
+                    const updatedEmbed = new EmbedBuilder()
+                        .setTitle('✅ Agreement Accepted')
+                        .setDescription(embed.description.replace('Please read and agree to the following:', '✅ Agreement accepted by user'))
+                        .setColor('#57F287');
+
+                    await agreementMessage.edit({
+                        embeds: [updatedEmbed],
+                        components: []
+                    });
+                }
+
+            } catch (error) {
+                console.error('Agree ticket error:', error);
+                await interaction.reply({ 
+                    content: '❌ Failed to process agreement.', 
                     ephemeral: true 
                 });
             }
