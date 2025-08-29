@@ -880,18 +880,35 @@ async function handleModalSubmissions(interaction) {
         }
     }
 
-    // Handle ticket modal submission
+    // Handle ticket modal submission - FIXED VERSION
     if (interaction.customId === 'ticketModal') {
         const subject = interaction.fields.getTextInputValue('subjectInput');
         const description = interaction.fields.getTextInputValue('descriptionInput');
 
         try {
+            // Validate inputs
+            if (!subject || subject.trim().length === 0) {
+                await interaction.reply({
+                    content: '❌ Subject is required.',
+                    ephemeral: true
+                });
+                return;
+            }
+
+            if (!description || description.trim().length === 0) {
+                await interaction.reply({
+                    content: '❌ Description is required.',
+                    ephemeral: true
+                });
+                return;
+            }
+
             // Create private ticket channel
             const guild = interaction.guild;
             const ticketChannel = await guild.channels.create({
                 name: `ticket-${interaction.user.username}`,
                 type: ChannelType.GuildText,
-                parent: TICKET_CREATION_CATEGORY_ID, // Use the correct category ID
+                parent: TICKET_CREATION_CATEGORY_ID,
                 permissionOverwrites: [
                     {
                         id: guild.id,
@@ -899,15 +916,28 @@ async function handleModalSubmissions(interaction) {
                     },
                     {
                         id: interaction.user.id,
-                        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+                        allow: [
+                            PermissionFlagsBits.ViewChannel, 
+                            PermissionFlagsBits.SendMessages, 
+                            PermissionFlagsBits.ReadMessageHistory
+                        ],
                     },
                     {
                         id: client.user.id,
-                        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels],
+                        allow: [
+                            PermissionFlagsBits.ViewChannel, 
+                            PermissionFlagsBits.SendMessages, 
+                            PermissionFlagsBits.ManageChannels,
+                            PermissionFlagsBits.ManageMessages
+                        ],
                     },
                     {
-                        id: OWNER_USER_ID, // Owner ID
-                        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+                        id: OWNER_USER_ID,
+                        allow: [
+                            PermissionFlagsBits.ViewChannel, 
+                            PermissionFlagsBits.SendMessages, 
+                            PermissionFlagsBits.ReadMessageHistory
+                        ],
                     }
                 ],
             });
@@ -930,7 +960,7 @@ async function handleModalSubmissions(interaction) {
                     { name: 'Created', value: `<t:${Math.floor(Date.now() / 1000)}:f>`, inline: true },
                     { name: 'Status', value: '🟢 Open', inline: true }
                 )
-                .setFooter({ text: `Ticket ID: ${ticketChannel.id.slice(-6)}` })
+                .setFooter({ text: `Ticket ID: ${ticketChannel.id.slice(-6)}`, iconURL: client.user.displayAvatarURL() })
                 .setTimestamp();
 
             // Create action buttons
@@ -966,7 +996,9 @@ async function handleModalSubmissions(interaction) {
                 .setColor('#FFA500')
                 .addFields(
                     { name: 'Do you agree to these terms?', value: 'Click the button below to confirm' }
-                );
+                )
+                .setFooter({ text: 'Ticket System', iconURL: client.user.displayAvatarURL() })
+                .setTimestamp();
 
             const agreementRow = new ActionRowBuilder()
                 .addComponents(
@@ -1017,6 +1049,7 @@ async function handleButtonInteractions(interaction) {
                         .setRequired(true)
                         .setPlaceholder('Brief subject of your ticket')
                         .setMaxLength(100)
+                        .setMinLength(1)
                 ),
                 new ActionRowBuilder().addComponents(
                     new TextInputBuilder()
@@ -1355,7 +1388,9 @@ async function handleButtonInteractions(interaction) {
                 const updatedEmbed = new EmbedBuilder()
                     .setTitle('✅ Agreement Accepted')
                     .setDescription(embed.description.replace('Please read and agree to the following:', '✅ Agreement accepted by user'))
-                    .setColor('#57F287');
+                    .setColor('#57F287')
+                    .setFooter({ text: 'Ticket System', iconURL: client.user.displayAvatarURL() })
+                    .setTimestamp();
 
                 await agreementMessage.edit({
                     embeds: [updatedEmbed],
